@@ -1,0 +1,346 @@
+ #!/bin/bash
+
+# Error handling
+set -e
+trap 'echo "Error occurred at line $LINENO. Exit code: $?"' ERR
+
+# Define variables
+LOG_FILE="/var/log/mydello-setup.log"
+APP_DIR="/var/www/mydello"
+NGINX_CONFIG="/etc/nginx/sites-available/mydello"
+NODE_VERSION="20.x"
+
+# Logging function
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+}
+
+# Check if running as root
+if [[ $EUID -ne 0 ]]; then
+   log "This script must be run as root or with sudo"
+   exit 1
+fi
+
+# Create log file
+touch "$LOG_FILE"
+chmod 644 "$LOG_FILE"
+
+log "Starting MyDello setup..."
+
+# Get Public IP
+PUBLIC_IP=$(curl -s ifconfig.me)
+if [[ -z "$PUBLIC_IP" ]]; then
+    log "Failed to fetch public IP"
+    exit 1
+fi
+log "Public IP: $PUBLIC_IP"
+
+# Update system
+log "Updating system packages..."
+apt update && apt upgrade -y
+
+# Install essential packages
+log "Installing essential packages..."
+apt install -y curl wget git build-essential nginx ufw fail2ban
+
+# Install Node.js
+log "Installing Node.js ${NODE_VERSION}..."
+curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION} | bash -
+apt install -y nodejs
+
+# Install PM2 globally
+log "Installing PM2..."
+npm install -p pm2@latest -g
+
+# Configure firewall
+log "Configuring firewall..."
+ufw allow 'Nginx Full'
+ufw allow ssh
+ufw --force enable
+
+# Create application directory
+log "Creating application directory..."
+mkdir -p $APP_DIR
+cd $APP_DIR
+
+# Initialize new Node.js project
+log "Initializing Node.js project..."
+npm init -y
+
+# Install project dependencies
+log "Installing project dependencies..."
+npm install \
+    react \
+    react-dom \
+    next \
+    @radix-ui/react-alert-dialog \
+    @radix-ui/react-dialog \
+    @radix-ui/react-dropdown-menu \
+    @radix-ui/react-label \
+    @radix-ui/react-select \
+    @radix-ui/react-slot \
+    @radix-ui/react-tabs \
+    class-variance-authority \
+    clsx \
+    lucide-react \
+    tailwindcss \
+    postcss \
+    autoprefixer \
+    @tailwindcss/forms \
+    date-fns \
+    typescript \
+    @types/node \
+    @types/react \
+    @types/react-dom \
+    eslint \
+    eslint-config-next \
+    prettier \
+    --save
+
+# Development dependencies
+npm install -D \
+    @typescript-eslint/parser \
+    @typescript-eslint/eslint-plugin \
+    eslint-plugin-react \
+    eslint-plugin-react-hooks
+
+# Create necessary directories
+log "Creating project structure..."
+mkdir -p src/{components,pages,styles,utils,hooks,contexts,public}
+
+# Configure Nginx
+log "Configuring Nginx..."
+cat > $NGINX_CONFIG <<EOL
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $PUBLIC_IP;
+    root $APP_DIR/out;
+
+    location / {
+        proxy_pass http://localhost:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host \$host;
+        proxy_cache_bypass \$http_upgrade;
+    }
+
+    # Enable gzip compression
+    gzip on;
+    gzip_vary on;
+    gzip_min_length 10240;
+    gzip_proxied expired no-cache no-store private auth;
+    gzip_types text/plain text/css text/xml text/javascript application/x-javascript application/xml application/javascript;
+    gzip_disable "MSIE [1-6]\.";
+
+    # Security headers
+    add_header X-Frame-Options "SAMEORIGIN";
+    add_header X-XSS-Protection "1; mode=block";
+    add_header X-Content-Type-Options "nosniff";
+    add_header Referrer-Policy "no-referrer-when-downgrade";
+
+    # Cache static files
+    location ~* \.(jpg|jpeg|png|gif|ico|css|js)$ {
+        expires 7d;
+        add_header Cache-Control "public, no-transform";
+    }
+}
+EOL
+
+# Enable Nginx site
+ln -sf $NGINX_CONFIG /etc/nginx/sites-enabled/
+rm -f /etc/nginx/sites-enabled/default
+
+# Create package.json scripts
+log "Configuring package.json scripts..."
+cat > $APP_DIR/package.json <<EOL
+{
+  "name": "mydello",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "format": "prettier --write ."
+  }
+}
+EOL
+
+# Create next.config.js
+log "Creating Next.js configuration..."
+cat > $APP_DIR/next.config.js <<EOL
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  reactStrictMode: true,
+  swcMinify: true,
+}
+
+module.exports = nextConfig
+EOL
+
+# Create tailwind.config.js
+log "Creating Tailwind configuration..."
+cat > $APP_DIR/tailwind.config.js <<EOL
+/** @type {import('tailwindcss').Config} */
+module.exports = {
+  content: [
+    './src/pages/**/*.{js,ts,jsx,tsx}',
+    './src/components/**/*.{js,ts,jsx,tsx}',
+  ],
+  theme: {
+    extend: {
+      colors: {
+        'brand': {
+          50: '#f0f9ff',
+          100: '#e0f2fe',
+          500: '#0ea5e9',
+          600: '#0284c7',
+          700: '#0369a1',
+        },
+      },
+    },
+  },
+  plugins: [require('@tailwindcss/forms')],
+}
+EOL
+
+# Create postcss.config.js
+log "Creating PostCSS configuration..."
+cat > $APP_DIR/postcss.config.js <<EOL
+module.exports = {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {},
+  },
+}
+EOL
+
+# Create .gitignore
+log "Creating .gitignore..."
+cat > $APP_DIR/.gitignore <<EOL
+# dependencies
+/node_modules
+/.pnp
+.pnp.js
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# local env files
+.env*.local
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+EOL
+
+# Copy the React components from previous design
+log "Creating React components..."
+mkdir -p $APP_DIR/src/pages
+cat > $APP_DIR/src/pages/index.tsx <<EOL
+import React, { useState } from 'react';
+import { Calendar } from 'lucide-react';
+
+export default function Home() {
+  const [activeTab, setActiveTab] = useState('flights');
+  const [showBookingConfirmation, setShowBookingConfirmation] = useState(false);
+
+  return (
+    <div className="min-h-screen bg-gray-50">
+      {/* Hero Section */}
+      <header className="bg-gradient-to-r from-blue-600 to-blue-800 text-white">
+        <nav className="container mx-auto px-4 py-6 flex justify-between items-center">
+          <div className="text-2xl font-bold">MyDello</div>
+          <div className="hidden md:flex space-x-6">
+            <a href="#" className="hover:text-blue-200">Home</a>
+            <a href="#" className="hover:text-blue-200">Flights</a>
+            <a href="#" className="hover:text-blue-200">Hotels</a>
+            <a href="#" className="hover:text-blue-200">Packages</a>
+          </div>
+          <button className="bg-white text-blue-600 px-4 py-2 rounded-lg font-medium">
+            Sign In
+          </button>
+        </nav>
+
+        <div className="container mx-auto px-4 py-16 text-center">
+          <h1 className="text-5xl font-bold mb-6">Travel Made Simple</h1>
+          <p className="text-xl mb-12">Discover the world with our best deals</p>
+        </div>
+      </header>
+
+      {/* Main Content */}
+      <main className="container mx-auto px-4 py-8">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+          {['Hotels', 'Flights', 'Packages'].map((service, index) => (
+            <div key={index} className="bg-white p-6 rounded-lg shadow-md">
+              <h2 className="text-xl font-bold mb-4">{service}</h2>
+              <p className="text-gray-600 mb-4">Find the best {service.toLowerCase()} deals</p>
+              <button className="bg-blue-600 text-white px-4 py-2 rounded-lg">
+                Search {service}
+              </button>
+            </div>
+          ))}
+        </div>
+      </main>
+
+      {/* Footer */}
+      <footer className="bg-gray-800 text-white py-8 mt-12">
+        <div className="container mx-auto px-4 text-center">
+          <p>&copy; 2025 MyDello. All rights reserved.</p>
+        </div>
+      </footer>
+    </div>
+  );
+}
+EOL
+
+# Set correct permissions
+log "Setting permissions..."
+chown -R www-data:www-data $APP_DIR
+chmod -R 755 $APP_DIR
+
+# Start PM2 with the application
+log "Starting application with PM2..."
+cd $APP_DIR
+npm run build
+pm2 start npm --name "mydello" -- start
+pm2 save
+
+# Enable PM2 startup script
+log "Enabling PM2 startup script..."
+pm2 startup systemd -u www-data --hp $APP_DIR
+systemctl enable pm2-www-data
+
+# Restart Nginx
+log "Restarting Nginx..."
+systemctl restart nginx
+
+# Final message
+echo "================================================================"
+echo "Installation Completed Successfully!"
+echo "----------------------------------------------------------------"
+echo "Your website is now available at: http://$PUBLIC_IP"
+echo "You can manage the application using PM2 commands:"
+echo "  - pm2 status"
+echo "  - pm2 logs mydello"
+echo "  - pm2 restart mydello"
+echo "================================================================"
