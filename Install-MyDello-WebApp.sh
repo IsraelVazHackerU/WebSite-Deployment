@@ -1,284 +1,151 @@
 #!/bin/bash
 
-# Error handling
+# ==========================================
+# TechStart Solutions - Web Server Setup
+# ==========================================
+
 set -e
 trap 'echo "Error occurred at line $LINENO. Exit code: $?"' ERR
 
-# Define variables
-LOG_FILE="/var/log/mydello-setup.log"
-APP_DIR="/var/www/mydello"
-NGINX_CONFIG="/etc/nginx/sites-available/mydello"
-NODE_VERSION="20.x"
+LOG_FILE="/var/log/techstart-setup.log"
+APP_DIR="/var/www/html"
 
-# Logging function
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
 }
 
 # Check if running as root
 if [[ $EUID -ne 0 ]]; then
-   log "This script must be run as root or with sudo"
-   exit 1
+    echo "This script must be run as root or with sudo"
+    exit 1
 fi
 
-# Create log file
 touch "$LOG_FILE"
 chmod 644 "$LOG_FILE"
 
-log "Starting MyDello setup..."
+log "Starting TechStart Solutions web environment setup..."
 
-# Get Public IP
-PUBLIC_IP=$(curl -s ifconfig.me)
-if [[ -z "$PUBLIC_IP" ]]; then
-    log "Failed to fetch public IP"
-    exit 1
-fi
-log "Public IP: $PUBLIC_IP"
+# 1. System Updates and Core Packages
+log "Updating package index..."
+apt-get update
 
-# Update system
-log "Updating system packages..."
-apt update && apt upgrade -y
+log "Installing Nginx, UFW, Curl, and OpenSSL..."
+DEBIAN_FRONTEND=noninteractive apt-get install -y nginx ufw curl openssl
 
-# Install essential packages
-log "Installing essential packages..."
-apt install -y curl wget git build-essential nginx ufw fail2ban
+# 2. Generate Self-Signed SSL Certificate
+log "Generating self-signed SSL certificate..."
 
-# Install Node.js
-log "Installing Node.js ${NODE_VERSION}..."
-curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION} | bash -
-apt install -y nodejs
+openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+    -keyout /etc/ssl/private/nginx-selfsigned.key \
+    -out /etc/ssl/certs/nginx-selfsigned.crt \
+    -subj "/C=IL/ST=South/L=Sderot/O=TechStart Solutions/OU=IT/CN=techstart.local"
 
-# Install PM2 globally
-log "Installing PM2..."
-npm install -p pm2@latest -g
+chmod 600 /etc/ssl/private/nginx-selfsigned.key
+chmod 644 /etc/ssl/certs/nginx-selfsigned.crt
 
-# Configure firewall
-log "Configuring firewall..."
-ufw allow 'Nginx Full'
-ufw allow ssh
-ufw --force enable
+# 3. Configure Nginx
+log "Configuring Nginx for HTTP and HTTPS..."
 
-# Create application directory
-log "Creating application directory..."
-mkdir -p $APP_DIR
-cd $APP_DIR
-
-# Initialize Next.js project
-log "Creating Next.js project..."
-npx create-next-app@latest . --typescript --tailwind --eslint --app --src-dir --import-alias "@/*" --no-git --use-npm
-
-# Install additional dependencies
-log "Installing additional dependencies..."
-npm install lucide-react @radix-ui/react-alert-dialog @radix-ui/react-dialog @radix-ui/react-dropdown-menu @radix-ui/react-label @radix-ui/react-select @radix-ui/react-slot @radix-ui/react-tabs class-variance-authority clsx
-
-# Create directory structure
-log "Creating project structure..."
-mkdir -p src/{components,styles}
-
-# Configure Nginx
-log "Configuring Nginx..."
-cat > $NGINX_CONFIG <<EOL
+cat << 'EOF' > /etc/nginx/sites-available/default
 server {
-    listen 80;
-    listen [::]:80;
-    server_name $PUBLIC_IP;
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+
+    ssl_certificate /etc/ssl/certs/nginx-selfsigned.crt;
+    ssl_certificate_key /etc/ssl/private/nginx-selfsigned.key;
+
+    root /var/www/html;
+    index index.html index.htm index.nginx-debian.html;
+    server_name _;
 
     location / {
-        proxy_pass http://localhost:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host \$host;
-        proxy_cache_bypass \$http_upgrade;
+        try_files $uri $uri/ =404;
     }
-
-    # Enable gzip compression
-    gzip on;
-    gzip_vary on;
-    gzip_min_length 10240;
-    gzip_proxied expired no-cache no-store private auth;
-    gzip_types text/plain text/css text/xml text/javascript application/x-javascript application/xml application/javascript;
-    gzip_disable "MSIE [1-6]\.";
-
-    # Security headers
-    add_header X-Frame-Options "SAMEORIGIN";
-    add_header X-XSS-Protection "1; mode=block";
-    add_header X-Content-Type-Options "nosniff";
-    add_header Referrer-Policy "no-referrer-when-downgrade";
 }
-EOL
+EOF
 
-# Enable Nginx site
-ln -sf $NGINX_CONFIG /etc/nginx/sites-enabled/
-rm -f /etc/nginx/sites-enabled/default
+# 4. Create Demo Website
+log "Deploying TechStart static website..."
 
-# Create the main page component
-log "Creating main page component..."
-cat > $APP_DIR/src/app/page.tsx <<EOL
-'use client';
+mkdir -p "$APP_DIR"
 
-import React from 'react';
-
-export default function Home() {
-  return (
-    <div className="min-h-screen flex flex-col">
-      {/* Navigation */}
-      <nav className="bg-white shadow-md">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between h-16 items-center">
-            <div className="text-2xl font-bold text-blue-600">MyDello</div>
-            <div className="hidden md:flex space-x-8">
-              <a href="#" className="text-gray-700 hover:text-blue-600">Home</a>
-              <a href="#" className="text-gray-700 hover:text-blue-600">Flights</a>
-              <a href="#" className="text-gray-700 hover:text-blue-600">Hotels</a>
-              <a href="#" className="text-gray-700 hover:text-blue-600">Packages</a>
+cat << 'EOF' > "$APP_DIR/index.html"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TechStart Solutions - WebStore</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50 text-gray-800 font-sans min-h-screen flex flex-col">
+    <nav class="bg-blue-600 text-white shadow-md">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
+            <div class="text-2xl font-bold">TechStart Solutions</div>
+            <div class="hidden md:flex space-x-6">
+                <a href="#" class="hover:text-blue-200">Dashboard</a>
+                <a href="#" class="hover:text-blue-200">Store</a>
             </div>
-            <button className="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 transition-colors">
-              Sign In
-            </button>
-          </div>
         </div>
-      </nav>
+    </nav>
 
-      {/* Hero Section */}
-      <div className="bg-gradient-to-r from-blue-600 to-blue-800 text-white py-16">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-          <h1 className="text-4xl md:text-6xl font-bold mb-6">Travel Made Simple</h1>
-          <p className="text-xl md:text-2xl mb-8 text-blue-100">
-            Discover the world with our best deals
-          </p>
+    <main class="flex-grow max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16 text-center">
+        <h1 class="text-5xl font-extrabold text-gray-900 mb-6">Welcome to the WebStore</h1>
+        <p class="text-xl text-gray-600 mb-8">Your frontend server is successfully routing traffic.</p>
+
+        <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-200 inline-block text-left">
+            <h2 class="text-lg font-semibold border-b pb-2 mb-4">System Status</h2>
+            <ul class="space-y-2 text-green-600 font-mono text-sm">
+                <li>✓ Nginx Web Server: Active</li>
+                <li>✓ Port 80 HTTP: Open</li>
+                <li>✓ Port 443 HTTPS: Open</li>
+                <li>✓ NSG / Cloud Firewall: Ready for validation</li>
+            </ul>
         </div>
-      </div>
+    </main>
 
-      {/* Main Content */}
-      <main className="flex-grow max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-          {/* Hotels Card */}
-          <div className="bg-white rounded-lg shadow-lg overflow-hidden">
-            <div className="p-6">
-              <h2 className="text-2xl font-bold mb-4">Hotels</h2>
-              <p className="text-gray-600 mb-6">Find the best hotels deals</p>
-              <button className="w-full bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors">
-                Search Hotels
-              </button>
-            </div>
-          </div>
+    <footer class="bg-gray-800 text-white py-6 text-center text-sm">
+        <p>&copy; 2026 TechStart Solutions Lab Environment.</p>
+    </footer>
+</body>
+</html>
+EOF
 
-          {/* Flights Card */}
-          <div className="bg-white rounded-lg shadow-lg overflow-hidden">
-            <div className="p-6">
-              <h2 className="text-2xl font-bold mb-4">Flights</h2>
-              <p className="text-gray-600 mb-6">Find the best flights deals</p>
-              <button className="w-full bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors">
-                Search Flights
-              </button>
-            </div>
-          </div>
+# 5. Permissions
+log "Setting file permissions..."
 
-          {/* Packages Card */}
-          <div className="bg-white rounded-lg shadow-lg overflow-hidden">
-            <div className="p-6">
-              <h2 className="text-2xl font-bold mb-4">Packages</h2>
-              <p className="text-gray-600 mb-6">Find the best packages deals</p>
-              <button className="w-full bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors">
-                Search Packages
-              </button>
-            </div>
-          </div>
-        </div>
-      </main>
+chown -R www-data:www-data "$APP_DIR"
+chmod -R 755 "$APP_DIR"
 
-      {/* Footer */}
-      <footer className="bg-gray-800 text-white py-8">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-          <p>&copy; 2025 MyDello. All rights reserved.</p>
-        </div>
-      </footer>
-    </div>
-  );
-}
-EOL
+# 6. Firewall Configuration
+log "Configuring UFW firewall..."
 
-# Update layout.tsx
-cat > $APP_DIR/src/app/layout.tsx <<EOL
-import './globals.css'
-import type { Metadata } from 'next'
-import { Inter } from 'next/font/google'
+ufw allow 'Nginx Full'
+ufw allow OpenSSH
+ufw --force enable
 
-const inter = Inter({ subsets: ['latin'] })
+# 7. Validate and Restart Nginx
+log "Testing Nginx configuration..."
 
-export const metadata: Metadata = {
-  title: 'MyDello - Travel Made Simple',
-  description: 'Find the best travel deals with MyDello',
-}
+nginx -t
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode
-}) {
-  return (
-    <html lang="en">
-      <body className={inter.className}>{children}</body>
-    </html>
-  )
-}
-EOL
+log "Restarting and enabling Nginx..."
 
-# Update globals.css
-cat > $APP_DIR/src/app/globals.css <<EOL
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
-EOL
-
-# Set correct permissions
-log "Setting permissions..."
-chown -R www-data:www-data $APP_DIR
-chmod -R 755 $APP_DIR
-
-# Build the application
-log "Building the application..."
-cd $APP_DIR
-npm run build
-
-# Create PM2 ecosystem file
-cat > ecosystem.config.js <<EOL
-module.exports = {
-  apps: [{
-    name: 'mydello',
-    script: 'npm',
-    args: 'start',
-    cwd: '${APP_DIR}',
-    env: {
-      NODE_ENV: 'production',
-      PORT: 3000
-    }
-  }]
-}
-EOL
-
-# Start PM2 with the application
-log "Starting application with PM2..."
-pm2 start ecosystem.config.js
-pm2 save
-
-# Enable PM2 startup script
-log "Enabling PM2 startup script..."
-pm2 startup systemd -u www-data --hp $APP_DIR
-systemctl enable pm2-www-data
-
-# Restart Nginx
-log "Restarting Nginx..."
+systemctl enable nginx
 systemctl restart nginx
 
-# Final message
+# 8. Final Status
+PUBLIC_IP=$(curl -s --max-time 5 ifconfig.me || echo "UNKNOWN")
+
 echo "================================================================"
-echo "Installation Completed Successfully!"
+echo "TechStart Installation Completed Successfully!"
 echo "----------------------------------------------------------------"
-echo "Your website is now available at: http://$PUBLIC_IP"
-echo "You can manage the application using PM2 commands:"
-echo "  - pm2 status"
-echo "  - pm2 logs mydello"
-echo "  - pm2 restart mydello"
+echo "HTTP Access:  http://$PUBLIC_IP"
+echo "HTTPS Access: https://$PUBLIC_IP"
+echo "Note: HTTPS uses a self-signed certificate, so a browser warning is expected."
+echo "Log file: /var/log/techstart-setup.log"
 echo "================================================================"
+
+log "TechStart setup completed successfully."
